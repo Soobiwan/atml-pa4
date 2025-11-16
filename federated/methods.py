@@ -126,7 +126,7 @@ def fed_train(
                 scaffold_c_deltas.append(c_delta)
 
             elif method == "gh":
-                updated = client_update_gh(
+                updated = client_update(
                     model_class,
                     copy.deepcopy(round_state),
                     client_loaders[cid],
