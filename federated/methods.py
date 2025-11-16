@@ -10,7 +10,20 @@ from typing import Callable, Dict, List, Type
 import torch
 import torch.nn as nn
 
-from .core import client_update, client_update_fedprox, client_update_scaffold, client_update_gh, client_update_sam, evaluate_model, l2_divergence, server_aggregate_weighted
+from .core import (
+    client_update, 
+    client_update_fedprox, 
+    client_update_scaffold, 
+    # client_update_gh, # We can remove this
+    client_update_sam, 
+    evaluate_model, 
+    l2_divergence, 
+    server_aggregate_weighted,
+    server_aggregate_gh,  # <-- IMPORT NEW
+    flatten_state_dict,     # <-- IMPORT NEW
+    unflatten_state_dict    # <-- IMPORT NEW
+)
+
 from .data_utils import build_client_loaders_dirichlet
     
 def fed_train(
@@ -147,7 +160,19 @@ def fed_train(
         drift_hist.append(l2_divergence(round_state, client_states))
 
         # Aggregate
-        new_global = server_aggregate_weighted(client_states, selected_sizes)
+        if method == "gh":
+            new_global = server_aggregate_gh(
+                round_state, 
+                client_states, 
+                selected_sizes
+            )
+        else:
+            # All other methods (FedAvg, FedProx, FedSAM) use standard aggregation
+            # (Note: Scaffold's aggregation is different, but it modifies
+            #  the optimizer, not the aggregation function itself,
+            #  so this structure is OK)
+            new_global = server_aggregate_weighted(client_states, selected_sizes)
+        # new_global = server_aggregate_weighted(client_states, selected_sizes)
         global_model.load_state_dict(new_global)
 
         # Evaluate

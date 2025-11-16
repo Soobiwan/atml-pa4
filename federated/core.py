@@ -12,6 +12,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from collections import OrderedDict
+
+
 SAM_REPO = Path("external/sam")
 if not SAM_REPO.exists():
     SAM_REPO.parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +305,108 @@ def evaluate_model(model: nn.Module, data_loader, device: torch.device) -> Tuple
     avg_loss = loss_sum / len(data_loader)
     return accuracy, avg_loss
 
+
+
+@torch.no_grad()
+def flatten_state_dict(state_dict: dict) -> torch.Tensor:
+    """
+    Flattens a model's state_dict into a single 1D tensor.
+    """
+    # We move to CPU to avoid GPU memory issues when collecting many models
+    return torch.cat([
+        p.detach().cpu().flatten() for p in state_dict.values()
+    ])
+
+@torch.no_grad()
+def unflatten_state_dict(flat_tensor: torch.Tensor, template_state_dict: dict) -> dict:
+    """
+    Unflattens a 1D tensor back into a state_dict.
+    """
+    new_state_dict = OrderedDict()
+    current_idx = 0
+    for key, param in template_state_dict.items():
+        numel = param.numel()
+        shape = param.shape
+        # Ensure we're using the correct device, matching the template
+        new_state_dict[key] = flat_tensor[current_idx : current_idx + numel].reshape(shape).to(param.device)
+        current_idx += numel
+    
+    if current_idx != flat_tensor.numel():
+        raise ValueError("Flattened tensor size does not match template state_dict")
+        
+    return new_state_dict
+
+@torch.no_grad()
+def server_aggregate_gh(
+    global_state: dict, 
+    client_states: Sequence[dict], 
+    client_sizes: Sequence[int]
+) -> dict:
+    """
+    Performs Gradient Harmonization (FedGH) before weighted averaging.
+    """
+    if not client_states:
+        raise ValueError("client_states must be non-empty")
+
+    # 1. Get global model vector
+    global_vec = flatten_state_dict(global_state)
+    M = len(client_states)
+
+    # 2. Calculate all client deltas (g_i) as flat vectors
+    # g_i = θ_i - θ_g
+    client_deltas = [
+        flatten_state_dict(state) - global_vec for state in client_states
+    ]
+    
+    # 3. Perform Gradient Harmonization
+    # We will modify the client_deltas list in-place
+    
+    # Pre-compute norms squared for efficiency
+    # Add a small epsilon to prevent division by zero
+    client_norms_sq = [
+        torch.dot(g, g) + 1e-8 for g in client_deltas
+    ]
+
+    for i in range(M):
+        for j in range(i + 1, M):
+            gi = client_deltas[i]
+            gj = client_deltas[j]
+            
+            # Compute dot product
+            dot_prod = torch.dot(gi, gj)
+            
+            # If gi · gj < 0 (conflict)
+            if dot_prod < 0:
+                # Compute projection of gi onto gj
+                # proj_i_on_j = (dot_prod / ||gj||^2) * gj
+                proj_i = (dot_prod / client_norms_sq[j]) * gj
+                
+                # Compute projection of gj onto gi
+                # proj_j_on_i = (dot_prod / ||gi||^2) * gi
+                proj_j = (dot_prod / client_norms_sq[i]) * gi
+                
+                # Subtract the conflicting components
+                client_deltas[i] = gi - proj_i
+                client_deltas[j] = gj - proj_j
+                
+                # We've modified the deltas, so we must update their norms
+                # for subsequent calculations in the inner loop.
+                client_norms_sq[i] = torch.dot(client_deltas[i], client_deltas[i]) + 1e-8
+                client_norms_sq[j] = torch.dot(client_deltas[j], client_deltas[j]) + 1e-8
+
+    # 4. Perform weighted average on *harmonized* deltas
+    total_size = float(sum(client_sizes))
+    avg_harmonized_delta = torch.zeros_like(client_deltas[0])
+    
+    for delta, size in zip(client_deltas, client_sizes):
+        avg_harmonized_delta += delta * (size / total_size)
+
+    # 5. Apply the average delta to the global model vector
+    # θ_new = θ_g + avg_delta
+    new_global_vec = global_vec + avg_harmonized_delta
+    
+    # 6. Unflatten back into a state_dict
+    return unflatten_state_dict(new_global_vec, global_state)
 
 __all__ = [
     "client_update",
