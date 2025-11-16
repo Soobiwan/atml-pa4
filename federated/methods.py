@@ -162,17 +162,16 @@ def fed_train(
         # Aggregate
         if method == "gh":
             new_global = server_aggregate_gh(
-                round_state, 
-                client_states, 
-                selected_sizes
+                round_state,
+                client_states,
+                selected_sizes,
             )
         else:
-            # All other methods (FedAvg, FedProx, FedSAM) use standard aggregation
-            # (Note: Scaffold's aggregation is different, but it modifies
-            #  the optimizer, not the aggregation function itself,
-            #  so this structure is OK)
-            new_global = server_aggregate_weighted(client_states, selected_sizes)
-        # new_global = server_aggregate_weighted(client_states, selected_sizes)
+            if method == "scaffold":
+                uniform_sizes = [1 for _ in client_states]
+                new_global = server_aggregate_weighted(client_states, uniform_sizes)
+            else:
+                new_global = server_aggregate_weighted(client_states, selected_sizes)
         global_model.load_state_dict(new_global)
 
         # Evaluate
