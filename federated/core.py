@@ -60,7 +60,7 @@ def client_update_fedprox(model_class, global_weights, loader, epochs, lr, mu, d
     model.load_state_dict(global_weights)
     global_vec = torch.nn.utils.parameters_to_vector(model.parameters()).detach()
 
-    opt = torch.optim.SGD(model.parameters(), lr=lr)
+    opt = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
     crit = nn.CrossEntropyLoss()
 
     for _ in range(epochs):
@@ -137,7 +137,7 @@ def client_update_scaffold(
     model.load_state_dict(global_state)
     model.train()
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
     criterion = nn.CrossEntropyLoss()
 
     # -------- Track initial global weights θ_t (for control variate update) --------

@@ -25,7 +25,7 @@ def fed_train(
     local_epochs: int,
     lr: float,
     method: str = "fedavg",   # <-- NEW
-    mu: float = 1.0,          # <-- for FedProx
+    mu: float = 0.1,          # <-- for FedProx
     device: torch.device | None = None,
     seed: int = 42,
     client_fraction: float = 1.0,
