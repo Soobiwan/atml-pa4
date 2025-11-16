@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from sam.sam import SAM
+from sam import SAM
 
 def client_update(
     model_class: Type[nn.Module],
