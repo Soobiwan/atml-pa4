@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import copy
-from typing import Sequence, Tuple, Type
+from collections import defaultdict
+from typing import List, Sequence, Tuple, Type
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from sam import SAM
+from sam.sam import SAM
 
 def client_update(
     model_class: Type[nn.Module],
@@ -173,7 +174,6 @@ def client_update_scaffold(
 
     return copy.deepcopy(model.state_dict()), new_c_local
 
-################ TO BE IMPLEMENTED PROPERLY ##################
 def client_update_gh( 
     model_class: Type[nn.Module],
     model_state: dict,
@@ -184,8 +184,9 @@ def client_update_gh(
     *,
     momentum: float = 0.9,
     weight_decay: float = 5e-4,
+    grad_clip: float = 50.0,
 ) -> dict:
-    """Perform local training for k_epochs and return the updated state_dict."""
+    """Single FedGH-style local update (train once and collect prototype statistics)."""
 
     model = model_class().to(device)
     model.load_state_dict(model_state)
@@ -194,14 +195,59 @@ def client_update_gh(
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
 
+    def _split_outputs(output):
+        if isinstance(output, tuple):
+            logits = output[0]
+            rep = output[1] if len(output) > 1 else None
+        else:
+            logits, rep = output, None
+        return logits, rep
+
+    def _collect_class_prototypes():
+        proto_lists = defaultdict(list)
+        model.eval()
+        with torch.no_grad():
+            for images, labels in client_loader:
+                images, labels = images.to(device), labels.to(device)
+                _, reps = _split_outputs(model(images))
+                if reps is None:
+                    return {}
+
+                unique_classes = labels.unique()
+                for cls in unique_classes:
+                    mask = labels == cls
+                    cls_reps = reps[mask]
+                    if cls_reps.numel() == 0:
+                        continue
+                    proto_lists[int(cls.item())].append(cls_reps.mean(dim=0).detach())
+
+        prototypes = {}
+        for cls, rep_list in proto_lists.items():
+            if len(rep_list) == 1:
+                prototypes[cls] = rep_list[0]
+            else:
+                prototypes[cls] = torch.stack(rep_list).mean(dim=0)
+        return prototypes
+
+    has_representation = False
+
     for _ in range(k_epochs):
         for images, labels in client_loader:
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+
+            logits, reps = _split_outputs(model(images))
+            if reps is not None:
+                has_representation = True
+
+            loss = criterion(logits, labels)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
+
+    if has_representation:
+        _ = _collect_class_prototypes()
+
     return copy.deepcopy(model.state_dict())
 
 def server_aggregate_weighted(client_models: Sequence[dict], client_sizes: Sequence[int]) -> dict:
