@@ -148,7 +148,7 @@ def fed_train(
         # Evaluate
         acc, loss = evaluate_model(global_model, test_loader, device)
         acc_hist.append(acc)
-        print(f"Round {r+1}/{num_rounds} | Acc {acc:.2f}%")
+        print(f"Round {r+1}/{num_rounds} | Acc {acc:.2f}% | Drift {drift_hist[-1]:.2f}%")
 
     return {
         "accuracy": acc_hist,

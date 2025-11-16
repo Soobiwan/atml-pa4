@@ -12,7 +12,7 @@ TOTAL_TRAIN_SAMPLES = 50000 # CIFAR-10 has 50k training images
 SAMPLES_PER_CLIENT = TOTAL_TRAIN_SAMPLES // NUM_CLIENTS # 5000 each
 LEARNING_RATE = 0.01
 NUM_ROUNDS = 20       
-LOCAL_BATCH_SIZE = 32 
+LOCAL_BATCH_SIZE = 1024
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
 
