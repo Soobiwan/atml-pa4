@@ -136,7 +136,7 @@ def client_update_scaffold(
     device: torch.device,
     *,
     grad_clip: float | None = 50.0,
-) -> tuple[dict, List[torch.Tensor], List[torch.Tensor]]:
+) -> tuple[dict, List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
     """Run one SCAFFOLD client update and refresh control variates."""
 
     if lr <= 0:
@@ -182,7 +182,7 @@ def client_update_scaffold(
             c_delta.append(c_plus - c_l)
             new_c_local.append(c_plus.detach().clone())
 
-    return copy.deepcopy(model.state_dict()), new_c_local, c_delta
+    return copy.deepcopy(model.state_dict()), y_delta, new_c_local, c_delta
 
 def client_update_gh( 
     model_class: Type[nn.Module],

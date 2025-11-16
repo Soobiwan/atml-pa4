@@ -86,6 +86,7 @@ def fed_train(
 
         client_states = []
         selected_sizes = []
+        scaffold_y_deltas = []
         scaffold_c_deltas = []
 
         for cid in selected_clients:
@@ -112,7 +113,7 @@ def fed_train(
                 )
 
             elif method == "scaffold":
-                updated, new_c, c_delta = client_update_scaffold(
+                updated, y_delta, new_c, c_delta = client_update_scaffold(
                     model_class,
                     copy.deepcopy(round_state),
                     client_loaders[cid],
@@ -123,6 +124,7 @@ def fed_train(
                     device,
                 )
                 c_local[cid] = new_c
+                scaffold_y_deltas.append(y_delta)
                 scaffold_c_deltas.append(c_delta)
 
             elif method == "gh":
@@ -150,11 +152,11 @@ def fed_train(
 
         # SCAFFOLD global control variate
         if method == "scaffold" and scaffold_c_deltas:
+            frac = len(selected_clients) / num_clients
             for i in range(len(c_global)):
-                delta_sum = torch.zeros_like(c_global[i])
-                for delta in scaffold_c_deltas:
-                    delta_sum += delta[i]
-                c_global[i] = c_global[i] + delta_sum / num_clients
+                stacked = torch.stack([delta[i] for delta in scaffold_c_deltas])
+                mean_delta = stacked.mean(dim=0)
+                c_global[i] = c_global[i] + frac * mean_delta
 
         # Compute drift
         drift_hist.append(l2_divergence(round_state, client_states))
@@ -166,13 +168,16 @@ def fed_train(
                 client_states,
                 selected_sizes,
             )
+            global_model.load_state_dict(new_global)
+        elif method == "scaffold":
+            if scaffold_y_deltas:
+                per_param = list(zip(*scaffold_y_deltas))
+                for param, deltas in zip(global_model.parameters(), per_param):
+                    delta_stack = torch.stack(deltas)
+                    param.data += delta_stack.mean(dim=0)
         else:
-            if method == "scaffold":
-                uniform_sizes = [1 for _ in client_states]
-                new_global = server_aggregate_weighted(client_states, uniform_sizes)
-            else:
-                new_global = server_aggregate_weighted(client_states, selected_sizes)
-        global_model.load_state_dict(new_global)
+            new_global = server_aggregate_weighted(client_states, selected_sizes)
+            global_model.load_state_dict(new_global)
 
         # Evaluate
         acc, loss = evaluate_model(global_model, test_loader, device)
