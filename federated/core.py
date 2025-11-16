@@ -1,14 +1,27 @@
 """Core utilities shared by FedAvg-style optimizers."""
-
 from __future__ import annotations
 
 import copy
 from collections import defaultdict
 from typing import List, Sequence, Tuple, Type
+import sys, os, subprocess, contextlib
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+SAM_REPO = Path("external/sam")
+if not SAM_REPO.exists():
+    SAM_REPO.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Cloning SAM into {SAM_REPO} ...")
+    subprocess.run(["git", "clone", "https://github.com/davda54/sam", str(SAM_REPO)], check=True)
+
+if str(SAM_REPO) not in sys.path:
+    sys.path.insert(0, str(SAM_REPO))
+
+
 
 from sam import SAM
 
