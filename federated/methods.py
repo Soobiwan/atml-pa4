@@ -111,14 +111,48 @@ def fed_train(
                 c_local[cid] = new_c
 
             elif method == "gh":
-                updated = client_update_gh(
-                    model_class,
-                    copy.deepcopy(round_state),
-                    client_loaders[cid],
-                    local_epochs,
-                    lr,
-                    device,
-                )
+                # 1️⃣ Compute client weight updates (deltas)
+                deltas = []
+                for client_state in [client_update_gh(model_class, copy.deepcopy(round_state),
+                                                    client_loaders[cid],
+                                                    local_epochs, lr, device) 
+                                    for cid in selected_clients]:
+                    delta = {k: client_state[k] - round_state[k] for k in round_state.keys()}
+                    deltas.append(delta)
+
+                # 2️⃣ Flatten deltas for pairwise harmonization
+                flat_deltas = [torch.cat([v.flatten() for v in d.values()]) for d in deltas]
+
+                M = len(flat_deltas)
+                for i in range(M):
+                    for j in range(i + 1, M):
+                        dot = torch.dot(flat_deltas[i], flat_deltas[j])
+                        if dot < 0:  # conflict detected
+                            norm_i = flat_deltas[i].norm() ** 2
+                            norm_j = flat_deltas[j].norm() ** 2
+                            flat_deltas[i] -= (dot / norm_j) * flat_deltas[j]
+                            flat_deltas[j] -= (dot / norm_i) * flat_deltas[i]
+
+                # 3️⃣ Map flat deltas back to weight dicts
+                harmonized_deltas = []
+                for delta_dict, flat_delta in zip(deltas, flat_deltas):
+                    harmonized_delta = {}
+                    idx = 0
+                    for k, v in delta_dict.items():
+                        numel = v.numel()
+                        harmonized_delta[k] = flat_delta[idx: idx + numel].view_as(v)
+                        idx += numel
+                    harmonized_deltas.append(harmonized_delta)
+
+                # 4️⃣ Weighted aggregation of harmonized deltas
+                new_global = copy.deepcopy(round_state)
+                total_size = sum(selected_sizes)
+                for k in new_global.keys():
+                    new_global[k] += sum(harmonized_deltas[i][k] * selected_sizes[i] / total_size
+                                        for i in range(M))
+
+                global_model.load_state_dict(new_global)
+
 
             elif method == "fedsam":
                 updated = client_update_sam(

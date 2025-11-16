@@ -140,15 +140,12 @@ def client_update_scaffold(
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
     criterion = nn.CrossEntropyLoss()
 
-    # -------- Track initial global weights θ_t (for control variate update) --------
+    # Track initial global weights θ_t
     global_params_vector = torch.nn.utils.parameters_to_vector(
         [p.detach().clone() for p in model.parameters()]
     )
 
-    # -------------------------------------------------------------------------------
-    #   Local Training Loop
-    #   SCAFFOLD modifies the gradient at each step: g ← g - c_global + c_local
-    # -------------------------------------------------------------------------------
+    # ---- Training loop ----
     for _ in range(k_epochs):
         for images, labels in client_loader:
             images, labels = images.to(device), labels.to(device)
@@ -158,25 +155,23 @@ def client_update_scaffold(
             loss = criterion(output, labels)
             loss.backward()
 
-            # === SCAFFOLD correction: add (c_local - c_global) to each gradient ===
+            # === SCAFFOLD correction ===
             for p, cg, cl in zip(model.parameters(), c_global, c_local):
                 if p.grad is not None:
                     p.grad.data.add_(cl - cg)
 
+            # === CLIP GRADIENTS ===
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+
             optimizer.step()
 
-    # -------------------------------------------------------------------------------
-    #   Compute new client control variate c_i^{new}
-    #   Formula from SCAFFOLD paper:
-    #       c_i^{new} = c_i - c + (1 / (K * lr)) * (θ_t - θ_{t+1})
-    # -------------------------------------------------------------------------------
+    # ---- Compute new client control variate c_i^{new} ----
     local_params_vector = torch.nn.utils.parameters_to_vector(
         [p.detach().clone() for p in model.parameters()]
     )
 
     delta = (global_params_vector - local_params_vector) / (k_epochs * lr)
 
-    # Convert flattened Δ into per-parameter tensors
     new_c_local = []
     idx = 0
     for p, cg, cl in zip(model.parameters(), c_global, c_local):
@@ -186,6 +181,7 @@ def client_update_scaffold(
         idx += numel
 
     return copy.deepcopy(model.state_dict()), new_c_local
+
 
 def client_update_gh( 
     model_class: Type[nn.Module],
