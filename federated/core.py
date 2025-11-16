@@ -131,7 +131,11 @@ def client_update_scaffold(
     c_global: List[torch.Tensor],
     c_local: List[torch.Tensor],
     device: torch.device,
-) -> tuple[dict, List[torch.Tensor]]:
+) -> tuple[dict, List[torch.Tensor], List[torch.Tensor]]:
+    """Run one SCAFFOLD client update and refresh control variates."""
+
+    if lr <= 0:
+        raise ValueError("Learning rate must be positive for SCAFFOLD.")
 
     model = model_class().to(device)
     model.load_state_dict(global_state)
@@ -140,52 +144,36 @@ def client_update_scaffold(
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
     criterion = nn.CrossEntropyLoss()
 
-    # -------- Track initial global weights θ_t (for control variate update) --------
-    global_params_vector = torch.nn.utils.parameters_to_vector(
-        [p.detach().clone() for p in model.parameters()]
-    )
+    initial_params = [param.detach().clone() for param in model.parameters()]
+    grad_correction = [(c_g - c_l).detach() for c_g, c_l in zip(c_global, c_local)]
 
-    # -------------------------------------------------------------------------------
-    #   Local Training Loop
-    #   SCAFFOLD modifies the gradient at each step: g ← g - c_global + c_local
-    # -------------------------------------------------------------------------------
     for _ in range(k_epochs):
         for images, labels in client_loader:
             images, labels = images.to(device), labels.to(device)
 
             optimizer.zero_grad()
-            output = model(images)
-            loss = criterion(output, labels)
+            outputs = model(images)
+            loss = criterion(outputs, labels)
             loss.backward()
 
-            # === SCAFFOLD correction: add (c_local - c_global) to each gradient ===
-            for p, cg, cl in zip(model.parameters(), c_global, c_local):
-                if p.grad is not None:
-                    p.grad.data.add_(cl - cg)
+            for param, corr in zip(model.parameters(), grad_correction):
+                if param.grad is not None:
+                    param.grad.data.add_(corr)
 
             optimizer.step()
 
-    # -------------------------------------------------------------------------------
-    #   Compute new client control variate c_i^{new}
-    #   Formula from SCAFFOLD paper:
-    #       c_i^{new} = c_i - c + (1 / (K * lr)) * (θ_t - θ_{t+1})
-    # -------------------------------------------------------------------------------
-    local_params_vector = torch.nn.utils.parameters_to_vector(
-        [p.detach().clone() for p in model.parameters()]
-    )
+    with torch.no_grad():
+        y_delta = [param.detach() - init for param, init in zip(model.parameters(), initial_params)]
 
-    delta = (global_params_vector - local_params_vector) / (k_epochs * lr)
+        coef = 1.0 / (k_epochs * lr)
+        new_c_local = []
+        c_delta = []
+        for c_l, c_g, diff in zip(c_local, c_global, y_delta):
+            c_plus = c_l - c_g - coef * diff
+            c_delta.append(c_plus - c_l)
+            new_c_local.append(c_plus.detach().clone())
 
-    # Convert flattened Δ into per-parameter tensors
-    new_c_local = []
-    idx = 0
-    for p, cg, cl in zip(model.parameters(), c_global, c_local):
-        numel = p.numel()
-        new_val = cl - cg + delta[idx:idx + numel].view_as(p)
-        new_c_local.append(new_val.detach().clone())
-        idx += numel
-
-    return copy.deepcopy(model.state_dict()), new_c_local
+    return copy.deepcopy(model.state_dict()), new_c_local, c_delta
 
 def client_update_gh( 
     model_class: Type[nn.Module],

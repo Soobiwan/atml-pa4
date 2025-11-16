@@ -73,6 +73,7 @@ def fed_train(
 
         client_states = []
         selected_sizes = []
+        scaffold_c_deltas = []
 
         for cid in selected_clients:
 
@@ -98,7 +99,7 @@ def fed_train(
                 )
 
             elif method == "scaffold":
-                updated, new_c = client_update_scaffold(
+                updated, new_c, c_delta = client_update_scaffold(
                     model_class,
                     copy.deepcopy(round_state),
                     client_loaders[cid],
@@ -109,6 +110,7 @@ def fed_train(
                     device,
                 )
                 c_local[cid] = new_c
+                scaffold_c_deltas.append(c_delta)
 
             elif method == "gh":
                 updated = client_update_gh(
@@ -134,9 +136,12 @@ def fed_train(
             selected_sizes.append(client_sizes[cid])
 
         # SCAFFOLD global control variate
-        if method == "scaffold":
+        if method == "scaffold" and scaffold_c_deltas:
             for i in range(len(c_global)):
-                c_global[i] = sum(c_local[cid][i] for cid in selected_clients) / len(selected_clients)
+                delta_sum = torch.zeros_like(c_global[i])
+                for delta in scaffold_c_deltas:
+                    delta_sum += delta[i]
+                c_global[i] = c_global[i] + delta_sum / num_clients
 
         # Compute drift
         drift_hist.append(l2_divergence(round_state, client_states))
