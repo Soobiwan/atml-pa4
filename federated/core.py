@@ -134,8 +134,6 @@ def client_update_scaffold(
     c_global: List[torch.Tensor],
     c_local: List[torch.Tensor],
     device: torch.device,
-    *,
-    grad_clip: float | None = 50.0,
 ) -> tuple[dict, List[torch.Tensor], List[torch.Tensor]]:
     """Run one SCAFFOLD client update and refresh control variates."""
 
@@ -164,10 +162,6 @@ def client_update_scaffold(
             for param, corr in zip(model.parameters(), grad_correction):
                 if param.grad is not None:
                     param.grad.data.add_(corr)
-                    torch.nan_to_num_(param.grad, nan=0.0, posinf=0.0, neginf=0.0)
-
-            if grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
 
             optimizer.step()
 
