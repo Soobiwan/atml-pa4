@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from sam import SAM
 
 def client_update(
     model_class: Type[nn.Module],
@@ -40,6 +41,168 @@ def client_update(
             optimizer.step()
     return copy.deepcopy(model.state_dict())
 
+def client_update_fedprox(model_class, global_weights, loader, epochs, lr, mu, device):
+    model = model_class().to(device)
+    model.load_state_dict(global_weights)
+    global_vec = torch.nn.utils.parameters_to_vector(model.parameters()).detach()
+
+    opt = torch.optim.SGD(model.parameters(), lr=lr)
+    crit = nn.CrossEntropyLoss()
+
+    for _ in range(epochs):
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            opt.zero_grad()
+            pred = model(x)
+            loss = crit(pred, y)
+
+            local_vec = torch.nn.utils.parameters_to_vector(model.parameters())
+            prox = (mu/2) * torch.norm(local_vec - global_vec)**2
+
+            (loss + prox).backward()
+            opt.step()
+
+    return copy.deepcopy(model.state_dict())
+
+def client_update_sam(
+    model_class: type[nn.Module],
+    model_state: dict,
+    client_loader,
+    k_epochs: int,
+    lr: float,
+    device: torch.device,
+    rho: float = 0.05,
+    momentum: float = 0.9,
+    weight_decay: float = 5e-4,
+) -> dict:
+
+    model = model_class().to(device)
+    model.load_state_dict(model_state)
+    model.train()
+
+    base_optimizer = torch.optim.SGD
+    optimizer = SAM(
+        model.parameters(),
+        base_optimizer,
+        lr=lr,
+        rho=rho,
+        momentum=momentum,
+        weight_decay=weight_decay,
+    )
+
+    criterion = nn.CrossEntropyLoss()
+
+    for _ in range(k_epochs):
+        for images, labels in client_loader:
+            images, labels = images.to(device), labels.to(device)
+
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.first_step(zero_grad=True)
+
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.second_step(zero_grad=True)
+
+    return copy.deepcopy(model.state_dict())
+
+def client_update_scaffold(
+    model_class: Type[nn.Module],
+    global_state: dict,
+    client_loader,
+    k_epochs: int,
+    lr: float,
+    c_global: List[torch.Tensor],
+    c_local: List[torch.Tensor],
+    device: torch.device,
+) -> tuple[dict, List[torch.Tensor]]:
+
+    model = model_class().to(device)
+    model.load_state_dict(global_state)
+    model.train()
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+
+    # -------- Track initial global weights θ_t (for control variate update) --------
+    global_params_vector = torch.nn.utils.parameters_to_vector(
+        [p.detach().clone() for p in model.parameters()]
+    )
+
+    # -------------------------------------------------------------------------------
+    #   Local Training Loop
+    #   SCAFFOLD modifies the gradient at each step: g ← g - c_global + c_local
+    # -------------------------------------------------------------------------------
+    for _ in range(k_epochs):
+        for images, labels in client_loader:
+            images, labels = images.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            output = model(images)
+            loss = criterion(output, labels)
+            loss.backward()
+
+            # === SCAFFOLD correction: add (c_local - c_global) to each gradient ===
+            for p, cg, cl in zip(model.parameters(), c_global, c_local):
+                if p.grad is not None:
+                    p.grad.data.add_(cl - cg)
+
+            optimizer.step()
+
+    # -------------------------------------------------------------------------------
+    #   Compute new client control variate c_i^{new}
+    #   Formula from SCAFFOLD paper:
+    #       c_i^{new} = c_i - c + (1 / (K * lr)) * (θ_t - θ_{t+1})
+    # -------------------------------------------------------------------------------
+    local_params_vector = torch.nn.utils.parameters_to_vector(
+        [p.detach().clone() for p in model.parameters()]
+    )
+
+    delta = (global_params_vector - local_params_vector) / (k_epochs * lr)
+
+    # Convert flattened Δ into per-parameter tensors
+    new_c_local = []
+    idx = 0
+    for p, cg, cl in zip(model.parameters(), c_global, c_local):
+        numel = p.numel()
+        new_val = cl - cg + delta[idx:idx + numel].view_as(p)
+        new_c_local.append(new_val.detach().clone())
+        idx += numel
+
+    return copy.deepcopy(model.state_dict()), new_c_local
+
+################ TO BE IMPLEMENTED PROPERLY ##################
+def client_update_gh( 
+    model_class: Type[nn.Module],
+    model_state: dict,
+    client_loader,
+    k_epochs: int,
+    lr: float,
+    device: torch.device,
+    *,
+    momentum: float = 0.9,
+    weight_decay: float = 5e-4,
+) -> dict:
+    """Perform local training for k_epochs and return the updated state_dict."""
+
+    model = model_class().to(device)
+    model.load_state_dict(model_state)
+    model.train()
+
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
+    criterion = nn.CrossEntropyLoss()
+
+    for _ in range(k_epochs):
+        for images, labels in client_loader:
+            images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+    return copy.deepcopy(model.state_dict())
 
 def server_aggregate_weighted(client_models: Sequence[dict], client_sizes: Sequence[int]) -> dict:
     """Weighted average of client_models using client_sizes as weights."""
